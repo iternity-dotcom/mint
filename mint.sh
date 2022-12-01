@@ -140,6 +140,10 @@ function main()
     export ENABLE_VIRTUAL_STYLE
     export RUN_ON_FAIL
 
+    # Set to '1' if mc tests should get executed with an sse-s3 encrypted bucket.
+    # If not set, the default is 0. Means the tests runs against buckets without encryption.
+    export ENABLE_SSE_S3TESTS
+
     echo "Running with"
     echo "SERVER_ENDPOINT:      $SERVER_ENDPOINT"
     echo "ACCESS_KEY:           $ACCESS_KEY"
@@ -151,6 +155,7 @@ function main()
     echo "MINT_MODE:            $MINT_MODE"
     echo "ENABLE_VIRTUAL_STYLE: $ENABLE_VIRTUAL_STYLE"
     echo "RUN_ON_FAIL:          $RUN_ON_FAIL"
+    echo "ENABLE_SSE_S3TESTS:   $ENABLE_SSE_S3TESTS"
     echo
     echo "To get logs, run 'docker cp ${CONTAINER_ID}:/mint/log /tmp/mint-logs'"
     echo
