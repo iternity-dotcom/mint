@@ -17,3 +17,5 @@ run/core/minio-dotnet/obj/*
 run/core/minio-dotnet/out/*
 run/core/minio-go/main.go
 run/core/healthcheck/healthcheck
+*.iml
+.idea/
