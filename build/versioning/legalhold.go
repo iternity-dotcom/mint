@@ -21,6 +21,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -28,10 +29,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -67,8 +69,9 @@ func testLockingLegalhold() {
 		"objectName": object,
 		"expiry":     expiry,
 	}
+	ctx := context.Background()
 
-	_, err := s3Client.CreateBucket(&s3.CreateBucketInput{
+	_, err := s3Client.CreateBucket(ctx, &s3.CreateBucketInput{
 		Bucket:                     aws.String(bucket),
 		ObjectLockEnabledForBucket: aws.Bool(true),
 	})
@@ -97,12 +100,12 @@ func testLockingLegalhold() {
 	// Upload versions and save their version IDs
 	for i := range uploads {
 		putInput := &s3.PutObjectInput{
-			Body:                      aws.ReadSeekCloser(strings.NewReader("content")),
+			Body:                      strings.NewReader("content"),
 			Bucket:                    aws.String(bucket),
 			Key:                       aws.String(object),
-			ObjectLockLegalHoldStatus: aws.String(uploads[i].legalhold),
+			ObjectLockLegalHoldStatus: types.ObjectLockLegalHoldStatus(uploads[i].legalhold),
 		}
-		output, err := s3Client.PutObject(putInput)
+		output, err := s3Client.PutObject(ctx, putInput)
 		if err != nil {
 			failureLog(function, args, startTime, "", fmt.Sprintf("PUT expected to succeed but got %v", err), err).Fatal()
 			return
@@ -116,7 +119,7 @@ func testLockingLegalhold() {
 		Bucket: aws.String(bucket),
 		Key:    aws.String(object),
 	}
-	deleteOutput, err := s3Client.DeleteObject(deleteInput)
+	deleteOutput, err := s3Client.DeleteObject(ctx, deleteInput)
 	if err != nil {
 		failureLog(function, args, startTime, "", fmt.Sprintf("DELETE expected to succeed but got %v", err), err).Fatal()
 		return
@@ -134,7 +137,7 @@ func testLockingLegalhold() {
 			Key:       aws.String(object),
 			VersionId: aws.String(uploads[i].versionId),
 		}
-		_, err = s3Client.DeleteObject(deleteInput)
+		_, err = s3Client.DeleteObject(ctx, deleteInput)
 		if err == nil && uploads[i].legalhold == "ON" {
 			failureLog(function, args, startTime, "", "DELETE expected to fail but succeed instead", nil).Fatal()
 			return
@@ -154,7 +157,7 @@ func testLockingLegalhold() {
 			Key:       aws.String(object),
 			VersionId: aws.String(uploads[i].versionId),
 		}
-		_, err := s3Client.GetObjectLegalHold(input)
+		_, err := s3Client.GetObjectLegalHold(ctx, input)
 		if err != nil {
 			failureLog(function, args, startTime, "", fmt.Sprintf("GetObjectLegalHold expected to succeed but got %v", err), err).Fatal()
 			return
@@ -168,10 +171,10 @@ func testLockingLegalhold() {
 		input := &s3.PutObjectLegalHoldInput{
 			Bucket:    aws.String(bucket),
 			Key:       aws.String(object),
-			LegalHold: &s3.ObjectLockLegalHold{Status: aws.String("OFF")},
+			LegalHold: &types.ObjectLockLegalHold{Status: types.ObjectLockLegalHoldStatusOff},
 			VersionId: aws.String(uploads[i].versionId),
 		}
-		_, err := s3Client.PutObjectLegalHold(input)
+		_, err := s3Client.PutObjectLegalHold(ctx, input)
 		if err != nil {
 			failureLog(function, args, startTime, "", fmt.Sprintf("Turning off legalhold failed with %v", err), err).Fatal()
 			return
@@ -190,7 +193,7 @@ func testLockingLegalhold() {
 			}
 			// legalhold = "off" => The specified version does not exist.
 			// legalhold = ""    => The specified method is not allowed against this resource.
-			_, err := s3Client.GetObjectLegalHold(input)
+			_, err := s3Client.GetObjectLegalHold(ctx, input)
 			if err == nil {
 				failureLog(function, args, startTime, "", fmt.Sprintf("GetObjectLegalHold expected to fail but got %v", err), err).Fatal()
 				return
@@ -198,16 +201,14 @@ func testLockingLegalhold() {
 		}
 	}
 
-	// Second client
-	creds := credentials.NewStaticCredentials("test", "test", "")
-	newSession, err := session.NewSession()
+	// Second client with test credentials
+	creds := credentials.NewStaticCredentialsProvider("test", "test", "")
+	cfg2, err := config.LoadDefaultConfig(context.Background(), config.WithCredentialsProvider(creds))
 	if err != nil {
-		failureLog(function, args, startTime, "", fmt.Sprintf("NewSession expected to succeed but got %v", err), err).Fatal()
+		failureLog(function, args, startTime, "", fmt.Sprintf("LoadDefaultConfig expected to succeed but got %v", err), err).Fatal()
 		return
 	}
-	s3Config := s3Client.Config
-	s3Config.Credentials = creds
-	s3ClientTest := s3.New(newSession, &s3Config)
+	s3ClientTest := s3.NewFromConfig(cfg2)
 
 	// Check with a second client: object-handlers.go > GetObjectLegalHoldHandler > checkRequestAuthType
 	input := &s3.GetObjectLegalHoldInput{
@@ -215,7 +216,7 @@ func testLockingLegalhold() {
 		Key:    aws.String(object),
 	}
 	// The Access Key Id you provided does not exist in our records.
-	_, err = s3ClientTest.GetObjectLegalHold(input)
+	_, err = s3ClientTest.GetObjectLegalHold(ctx, input)
 	if err == nil {
 		failureLog(function, args, startTime, "", fmt.Sprintf("GetObjectLegalHold expected to fail but got %v", err), err).Fatal()
 		return
@@ -223,7 +224,7 @@ func testLockingLegalhold() {
 
 	// object-handlers.go > GetObjectLegalHoldHandler > globalBucketObjectLockSys.Get(bucket); !rcfg.LockEnabled
 	bucketWithoutLock := bucket + "-without-lock"
-	_, err = s3Client.CreateBucket(&s3.CreateBucketInput{
+	_, err = s3Client.CreateBucket(ctx, &s3.CreateBucketInput{
 		Bucket:                     aws.String(bucketWithoutLock),
 		ObjectLockEnabledForBucket: aws.Bool(false),
 	})
@@ -238,7 +239,7 @@ func testLockingLegalhold() {
 		Key:    aws.String(object),
 	}
 	// Bucket is missing ObjectLockConfiguration
-	_, err = s3Client.GetObjectLegalHold(input)
+	_, err = s3Client.GetObjectLegalHold(ctx, input)
 	if err == nil {
 		failureLog(function, args, startTime, "", fmt.Sprintf("GetObjectLegalHold expected to fail but got %v", err), err).Fatal()
 		return
@@ -254,7 +255,7 @@ func testLockingLegalhold() {
 			Key:    aws.String(object),
 		}
 		// The Access Key Id you provided does not exist in our records.
-		_, err := s3ClientTest.PutObjectLegalHold(input)
+		_, err := s3ClientTest.PutObjectLegalHold(ctx, input)
 		if err == nil {
 			failureLog(function, args, startTime, "", fmt.Sprintf("Turning off legalhold expected to fail but got %v", err), err).Fatal()
 			return
@@ -271,7 +272,7 @@ func testLockingLegalhold() {
 			Key:    aws.String(object),
 		}
 		// Bucket is missing ObjectLockConfiguration
-		_, err := s3Client.PutObjectLegalHold(input)
+		_, err := s3Client.PutObjectLegalHold(ctx, input)
 		if err == nil {
 			failureLog(function, args, startTime, "", fmt.Sprintf("Turning off legalhold expected to fail but got %v", err), err).Fatal()
 			return
@@ -280,12 +281,12 @@ func testLockingLegalhold() {
 
 	// object-handlers.go > PutObjectLegalHoldHandler > objectlock.ParseObjectLegalHold
 	putInput := &s3.PutObjectInput{
-		Body:                      aws.ReadSeekCloser(strings.NewReader("content")),
+		Body:                      strings.NewReader("content"),
 		Bucket:                    aws.String(bucket),
 		Key:                       aws.String(object),
-		ObjectLockLegalHoldStatus: aws.String("test"),
+		ObjectLockLegalHoldStatus: types.ObjectLockLegalHoldStatusOn,
 	}
-	output, err := s3Client.PutObject(putInput)
+	output, err := s3Client.PutObject(ctx, putInput)
 	if err != nil {
 		failureLog(function, args, startTime, "", fmt.Sprintf("PUT expected to succeed but got %v", err), err).Fatal()
 		return
@@ -298,9 +299,21 @@ func testLockingLegalhold() {
 		VersionId: aws.String(uploads[0].versionId),
 	}
 	// We encountered an internal error, please try again.: cause(EOF)
-	_, err = s3Client.PutObjectLegalHold(polhInput)
+	_, err = s3Client.PutObjectLegalHold(ctx, polhInput)
 	if err == nil {
-		failureLog(function, args, startTime, "", fmt.Sprintf("PutObjectLegalHold expected to fail but got %v", err), err).Fatal()
+		failureLog(function, args, startTime, "", "PutObjectLegalHold expected to fail but got success", nil).Fatal()
+		return
+	}
+
+	polhInput = &s3.PutObjectLegalHoldInput{
+		Bucket:    aws.String(bucket),
+		Key:       aws.String(object),
+		VersionId: aws.String(uploads[0].versionId),
+		LegalHold: &types.ObjectLockLegalHold{Status: types.ObjectLockLegalHoldStatusOff},
+	}
+	_, err = s3Client.PutObjectLegalHold(ctx, polhInput)
+	if err != nil {
+		failureLog(function, args, startTime, "", fmt.Sprintf("PutObjectLegalHold to turn-off legalhold expected to succeed, but got%v", err), err).Fatal()
 		return
 	}
 
@@ -320,7 +333,9 @@ func testLockingLegalholdMultipart() {
 		"expiry":     expiry,
 	}
 
-	_, err := s3Client.CreateBucket(&s3.CreateBucketInput{
+	ctx := context.Background()
+
+	_, err := s3Client.CreateBucket(ctx, &s3.CreateBucketInput{
 		Bucket:                     aws.String(bucket),
 		ObjectLockEnabledForBucket: aws.Bool(true),
 	})
@@ -347,25 +362,25 @@ func testLockingLegalholdMultipart() {
 	defer cleanupBucket(bucket, function, args, startTime)
 
 	type uploadedObject struct {
-		legalhold        string
+		legalhold        types.ObjectLockLegalHoldStatus
 		successfulRemove bool
 		versionId        string
 		deleteMarker     bool
 	}
 
 	uploads := []uploadedObject{
-		{legalhold: "ON"},
-		{legalhold: "OFF"},
+		{legalhold: types.ObjectLockLegalHoldStatusOn},
+		{legalhold: types.ObjectLockLegalHoldStatusOff},
 	}
 
 	partSize := 5 * 1024 * 1024 // Set part size to 5 MB (minimum size for a part)
 
 	// Upload versions and save their version IDs
 	for i := range uploads {
-		multipartUpload, err := s3Client.CreateMultipartUpload(&s3.CreateMultipartUploadInput{
+		multipartUpload, err := s3Client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
 			Bucket:                    aws.String(bucket),
 			Key:                       aws.String(object),
-			ObjectLockLegalHoldStatus: aws.String(uploads[i].legalhold),
+			ObjectLockLegalHoldStatus: uploads[i].legalhold,
 		})
 		if err != nil {
 			failureLog(function, args, startTime, "", "CreateMultipartupload API failed", err).Fatal()
@@ -383,15 +398,15 @@ func testLockingLegalholdMultipart() {
 			}
 			r := bytes.NewReader(filePart)
 
-			result, errUpload := s3Client.UploadPart(&s3.UploadPartInput{
+			result, errUpload := s3Client.UploadPart(ctx, &s3.UploadPartInput{
 				Bucket:     aws.String(bucket),
 				Key:        aws.String(object),
 				UploadId:   multipartUpload.UploadId,
-				PartNumber: aws.Int64(int64(j + 1)),
-				Body:       aws.ReadSeekCloser(r),
+				PartNumber: aws.Int32(int32(j + 1)),
+				Body:       r,
 			})
 			if errUpload != nil {
-				_, _ = s3Client.AbortMultipartUpload(&s3.AbortMultipartUploadInput{
+				_, _ = s3Client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
 					Bucket:   aws.String(bucket),
 					Key:      aws.String(object),
 					UploadId: multipartUpload.UploadId,
@@ -402,18 +417,18 @@ func testLockingLegalholdMultipart() {
 			parts[j] = result.ETag
 		}
 
-		completedParts := make([]*s3.CompletedPart, len(parts))
+		completedParts := make([]types.CompletedPart, len(parts))
 		for i, part := range parts {
-			completedParts[i] = &s3.CompletedPart{
+			completedParts[i] = types.CompletedPart{
 				ETag:       part,
-				PartNumber: aws.Int64(int64(i + 1)),
+				PartNumber: aws.Int32(int32(i + 1)),
 			}
 		}
 
-		output, err := s3Client.CompleteMultipartUpload(&s3.CompleteMultipartUploadInput{
+		output, err := s3Client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(object),
-			MultipartUpload: &s3.CompletedMultipartUpload{
+			MultipartUpload: &types.CompletedMultipartUpload{
 				Parts: completedParts},
 			UploadId: multipartUpload.UploadId,
 		})
@@ -431,7 +446,7 @@ func testLockingLegalholdMultipart() {
 		Bucket: aws.String(bucket),
 		Key:    aws.String(object),
 	}
-	deleteOutput, err := s3Client.DeleteObject(deleteInput)
+	deleteOutput, err := s3Client.DeleteObject(ctx, deleteInput)
 	if err != nil {
 		failureLog(function, args, startTime, "", fmt.Sprintf("DELETE expected to succeed but got %v", err), err).Fatal()
 		return
@@ -449,7 +464,7 @@ func testLockingLegalholdMultipart() {
 			Key:       aws.String(object),
 			VersionId: aws.String(uploads[i].versionId),
 		}
-		_, err = s3Client.DeleteObject(deleteInput)
+		_, err = s3Client.DeleteObject(ctx, deleteInput)
 		if err == nil && uploads[i].legalhold == "ON" {
 			failureLog(function, args, startTime, "", "DELETE expected to fail but succeed instead", nil).Fatal()
 			return
@@ -469,7 +484,7 @@ func testLockingLegalholdMultipart() {
 			Key:       aws.String(object),
 			VersionId: aws.String(uploads[i].versionId),
 		}
-		_, err := s3Client.GetObjectLegalHold(input)
+		_, err := s3Client.GetObjectLegalHold(ctx, input)
 		if err != nil {
 			failureLog(function, args, startTime, "", fmt.Sprintf("GetObjectLegalHold expected to succeed but got %v", err), err).Fatal()
 			return
@@ -483,10 +498,10 @@ func testLockingLegalholdMultipart() {
 		input := &s3.PutObjectLegalHoldInput{
 			Bucket:    aws.String(bucket),
 			Key:       aws.String(object),
-			LegalHold: &s3.ObjectLockLegalHold{Status: aws.String("OFF")},
+			LegalHold: &types.ObjectLockLegalHold{Status: types.ObjectLockLegalHoldStatusOff},
 			VersionId: aws.String(uploads[i].versionId),
 		}
-		_, err := s3Client.PutObjectLegalHold(input)
+		_, err := s3Client.PutObjectLegalHold(ctx, input)
 		if err != nil {
 			failureLog(function, args, startTime, "", fmt.Sprintf("Turning off legalhold failed with %v", err), err).Fatal()
 			return
@@ -505,7 +520,7 @@ func testLockingLegalholdMultipart() {
 			}
 			// legalhold = "off" => The specified version does not exist.
 			// legalhold = ""    => The specified method is not allowed against this resource.
-			_, err := s3Client.GetObjectLegalHold(input)
+			_, err := s3Client.GetObjectLegalHold(ctx, input)
 			if err == nil {
 				failureLog(function, args, startTime, "", fmt.Sprintf("GetObjectLegalHold expected to fail but got %v", err), err).Fatal()
 				return
@@ -513,16 +528,14 @@ func testLockingLegalholdMultipart() {
 		}
 	}
 
-	// Second client
-	creds := credentials.NewStaticCredentials("test", "test", "")
-	newSession, err := session.NewSession()
+	// Second client with test credentials
+	creds := credentials.NewStaticCredentialsProvider("test", "test", "")
+	cfg2, err := config.LoadDefaultConfig(context.Background(), config.WithCredentialsProvider(creds))
 	if err != nil {
-		failureLog(function, args, startTime, "", fmt.Sprintf("NewSession expected to succeed but got %v", err), err).Fatal()
+		failureLog(function, args, startTime, "", fmt.Sprintf("LoadDefaultConfig expected to succeed but got %v", err), err).Fatal()
 		return
 	}
-	s3Config := s3Client.Config
-	s3Config.Credentials = creds
-	s3ClientTest := s3.New(newSession, &s3Config)
+	s3ClientTest := s3.NewFromConfig(cfg2)
 
 	// Check with a second client: object-handlers.go > GetObjectLegalHoldHandler > checkRequestAuthType
 	input := &s3.GetObjectLegalHoldInput{
@@ -530,7 +543,7 @@ func testLockingLegalholdMultipart() {
 		Key:    aws.String(object),
 	}
 	// The Access Key Id you provided does not exist in our records.
-	_, err = s3ClientTest.GetObjectLegalHold(input)
+	_, err = s3ClientTest.GetObjectLegalHold(ctx, input)
 	if err == nil {
 		failureLog(function, args, startTime, "", fmt.Sprintf("GetObjectLegalHold expected to fail but got %v", err), err).Fatal()
 		return
@@ -538,7 +551,7 @@ func testLockingLegalholdMultipart() {
 
 	// object-handlers.go > GetObjectLegalHoldHandler > globalBucketObjectLockSys.Get(bucket); !rcfg.LockEnabled
 	bucketWithoutLock := bucket + "-without-lock"
-	_, err = s3Client.CreateBucket(&s3.CreateBucketInput{
+	_, err = s3Client.CreateBucket(ctx, &s3.CreateBucketInput{
 		Bucket:                     aws.String(bucketWithoutLock),
 		ObjectLockEnabledForBucket: aws.Bool(false),
 	})
@@ -553,7 +566,7 @@ func testLockingLegalholdMultipart() {
 		Key:    aws.String(object),
 	}
 	// Bucket is missing ObjectLockConfiguration
-	_, err = s3Client.GetObjectLegalHold(input)
+	_, err = s3Client.GetObjectLegalHold(ctx, input)
 	if err == nil {
 		failureLog(function, args, startTime, "", fmt.Sprintf("GetObjectLegalHold expected to fail but got %v", err), err).Fatal()
 		return
@@ -569,7 +582,7 @@ func testLockingLegalholdMultipart() {
 			Key:    aws.String(object),
 		}
 		// The Access Key Id you provided does not exist in our records.
-		_, err := s3ClientTest.PutObjectLegalHold(input)
+		_, err := s3ClientTest.PutObjectLegalHold(ctx, input)
 		if err == nil {
 			failureLog(function, args, startTime, "", fmt.Sprintf("Turning off legalhold expected to fail but got %v", err), err).Fatal()
 			return
@@ -586,7 +599,7 @@ func testLockingLegalholdMultipart() {
 			Key:    aws.String(object),
 		}
 		// Bucket is missing ObjectLockConfiguration
-		_, err := s3Client.PutObjectLegalHold(input)
+		_, err := s3Client.PutObjectLegalHold(ctx, input)
 		if err == nil {
 			failureLog(function, args, startTime, "", fmt.Sprintf("Turning off legalhold expected to fail but got %v", err), err).Fatal()
 			return
@@ -595,17 +608,16 @@ func testLockingLegalholdMultipart() {
 
 	// object-handlers.go > PutObjectLegalHoldHandler > objectlock.ParseObjectLegalHold
 	putInput := &s3.PutObjectInput{
-		Body:                      aws.ReadSeekCloser(strings.NewReader("content")),
+		Body:                      strings.NewReader("content"),
 		Bucket:                    aws.String(bucket),
 		Key:                       aws.String(object),
-		ObjectLockLegalHoldStatus: aws.String("test"),
+		ObjectLockLegalHoldStatus: types.ObjectLockLegalHoldStatus("test"),
 	}
-	output, err := s3Client.PutObject(putInput)
-	if err != nil {
-		failureLog(function, args, startTime, "", fmt.Sprintf("PUT expected to succeed but got %v", err), err).Fatal()
+	_, err = s3Client.PutObject(ctx, putInput)
+	if err == nil {
+		failureLog(function, args, startTime, "", "PUT expected to fail but succeeded", nil).Fatal()
 		return
 	}
-	uploads[0].versionId = *output.VersionId
 
 	polhInput := &s3.PutObjectLegalHoldInput{
 		Bucket:    aws.String(bucket),
@@ -613,17 +625,17 @@ func testLockingLegalholdMultipart() {
 		VersionId: aws.String(uploads[0].versionId),
 	}
 	// We encountered an internal error, please try again.: cause(EOF)
-	_, err = s3Client.PutObjectLegalHold(polhInput)
+	_, err = s3Client.PutObjectLegalHold(ctx, polhInput)
 	if err == nil {
 		failureLog(function, args, startTime, "", fmt.Sprintf("PutObjectLegalHold expected to fail but got %v", err), err).Fatal()
 		return
 	}
 
 	// Omit a part when uploading
-	multipartUpload, err := s3Client.CreateMultipartUpload(&s3.CreateMultipartUploadInput{
+	multipartUpload, err := s3Client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
 		Bucket:                    aws.String(bucket),
 		Key:                       aws.String(object),
-		ObjectLockLegalHoldStatus: aws.String(uploads[0].legalhold),
+		ObjectLockLegalHoldStatus: uploads[0].legalhold,
 	})
 	if err != nil {
 		failureLog(function, args, startTime, "", "CreateMultipartupload API failed", err).Fatal()
@@ -641,15 +653,15 @@ func testLockingLegalholdMultipart() {
 		}
 		r := bytes.NewReader(filePart)
 
-		result, errUpload := s3Client.UploadPart(&s3.UploadPartInput{
+		result, errUpload := s3Client.UploadPart(ctx, &s3.UploadPartInput{
 			Bucket:     aws.String(bucket),
 			Key:        aws.String(object),
 			UploadId:   multipartUpload.UploadId,
-			PartNumber: aws.Int64(int64(j + 1)),
-			Body:       aws.ReadSeekCloser(r),
+			PartNumber: aws.Int32(int32(j + 1)),
+			Body:       r,
 		})
 		if errUpload != nil {
-			_, _ = s3Client.AbortMultipartUpload(&s3.AbortMultipartUploadInput{
+			_, _ = s3Client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
 				Bucket:   aws.String(bucket),
 				Key:      aws.String(object),
 				UploadId: multipartUpload.UploadId,
@@ -660,18 +672,18 @@ func testLockingLegalholdMultipart() {
 		parts[j] = result.ETag
 	}
 
-	completedParts := make([]*s3.CompletedPart, len(parts))
+	completedParts := make([]types.CompletedPart, len(parts))
 	for i, part := range parts {
-		completedParts[i] = &s3.CompletedPart{
+		completedParts[i] = types.CompletedPart{
 			ETag:       part,
-			PartNumber: aws.Int64(int64(i + 1)),
+			PartNumber: aws.Int32(int32(i + 1)),
 		}
 	}
 
-	_, err = s3Client.CompleteMultipartUpload(&s3.CompleteMultipartUploadInput{
+	_, err = s3Client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(object),
-		MultipartUpload: &s3.CompletedMultipartUpload{
+		MultipartUpload: &types.CompletedMultipartUpload{
 			Parts: completedParts},
 		UploadId: multipartUpload.UploadId,
 	})

@@ -3,8 +3,7 @@
 Mint is a testing framework for Minio object server, available as a podman image. It runs correctness, benchmarking and stress tests. Following are the SDKs/tools used in correctness tests.
 
 - awscli
-- aws-sdk-go
-- aws-sdk-java
+- aws-sdk-go-v2
 - aws-sdk-java-v2
 - aws-sdk-php
 - aws-sdk-ruby
@@ -45,6 +44,7 @@ Below environment variables are required to be passed to the podman container. S
 | `SECRET_KEY`           | Secret Key for `SERVER_ENDPOINT` credentials                                                                                                   | `zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG` |
 | `ENABLE_HTTPS`         | (Optional) Set `1` to indicate to use HTTPS to access `SERVER_ENDPOINT`. Defaults to `0` (HTTP)                                                | `1`                                        |
 | `MINT_MODE`            | (Optional) Set mode indicating what category of tests to be run by values `core`, `full`. Defaults to `core`                                   | `full`                                     |
+| `MINT_MC_VARIANT`      | (Optional) Select `mc` test variant by values `mc`, `ec`. Defaults to `mc`. (Using `ec` requires providing the `ec` repo in the container.)    | `ec`                                       |                               |
 | `DOMAIN`               | (Optional) Value of MINIO_DOMAIN environment variable used in Minio server                                                                     | `myminio.com`                              |
 | `ENABLE_VIRTUAL_STYLE` | (Optional) Set `1` to indicate virtual style access . Defaults to `0` (Path style)                                                             | `1`                                        |
 | `RUN_ON_FAIL`          | (Optional) Set `1` to indicate execute all tests independent of failures (currently implemented for minio-go and minio-java) . Defaults to `0` | `1`                                        |

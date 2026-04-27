@@ -80,8 +80,17 @@ function run_test() {
 
 	mkdir -p "$BASE_LOG_DIR/$sdk_name"
 
-	(cd "$sdk_dir" && ./run.sh "$BASE_LOG_DIR/$LOG_FILE" "$BASE_LOG_DIR/$sdk_name/$ERROR_FILE")
+	# Use per-test log file instead of shared log
+	test_log_file="$BASE_LOG_DIR/$sdk_name/$LOG_FILE"
+
+	(cd "$sdk_dir" && ./run.sh "$test_log_file" "$BASE_LOG_DIR/$sdk_name/$ERROR_FILE")
 	rv=$?
+
+	# Append test results to global log file
+	if [ -f "$test_log_file" ]; then
+		cat "$test_log_file" >>"$BASE_LOG_DIR/$LOG_FILE"
+	fi
+
 	end=$(date +%s)
 	duration=$(humanize_time $((end - start)))
 
@@ -89,8 +98,13 @@ function run_test() {
 		echo "done in $duration"
 	else
 		echo "FAILED in $duration"
-		entry=$(tail -n 1 "$BASE_LOG_DIR/$LOG_FILE")
-		status=$(jq -e -r .status <<<"$entry")
+		# Read from test-specific log file, not shared one
+		if [ -f "$test_log_file" ]; then
+			entry=$(tail -n 1 "$test_log_file")
+		else
+			entry=""
+		fi
+		status=$(jq -e -r .status <<<"$entry" 2>/dev/null)
 		jq_rv=$?
 		if [ "$jq_rv" -ne 0 ]; then
 			echo "$entry"
@@ -186,14 +200,16 @@ function main() {
 
 	count="${#run_list[@]}"
 	i=0
+	j=0
 	for sdk_dir in "${run_list[@]}"; do
 		sdk_name=$(basename "$sdk_dir")
 		((i++))
+		((j++))
 		if [ ! -d "$sdk_dir" ]; then
 			echo "Test $sdk_name not found. Exiting Mint."
 			exit 1
 		fi
-		echo -n "($i/$count) Running $sdk_name tests ... "
+		echo -n "($j/$count) Running $sdk_name tests ... "
 		if ! run_test "$sdk_dir"; then
 			((i--))
 		fi
